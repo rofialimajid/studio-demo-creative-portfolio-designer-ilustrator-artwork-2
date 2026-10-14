@@ -204,11 +204,12 @@
 
     /* —— Hero —— */
     .hero {
-      min-height: min(820px, 90svh);
+      min-height: min(700px, 82svh);
       display: flex;
       flex-direction: column;
       justify-content: center;
-      padding-block: clamp(80px, 14vw, 160px);
+      padding-top: clamp(64px, 8vw, 100px);
+      padding-bottom: clamp(40px, 5vw, 64px);
       position: relative;
     }
     .hero-top {
@@ -277,8 +278,9 @@
 
     /* —— Gallery —— */
     .gallery-section {
-      padding-top: clamp(60px, 8vw, 120px);
+      padding-top: clamp(24px, 3vw, 40px);
       padding-bottom: 20px;
+      scroll-margin-top: 92px;
     }
     .section-heading {
       display: flex;
@@ -484,7 +486,7 @@
     }
     .list-view .art-card {
       display: grid;
-      grid-template-columns: 72px minmax(0, 1fr) minmax(180px, 0.7fr);
+      grid-template-columns: 76px minmax(220px, 1.05fr) minmax(220px, 0.95fr);
       align-items: stretch;
       border-radius: 0;
       border-left: none;
@@ -749,18 +751,19 @@
         border-top: 1px solid var(--border);
       }
       .header-actions .button { display: none; }
-      .hero { min-height: 78svh; padding-block: 90px; }
+      .hero { min-height: auto; padding-top: 64px; padding-bottom: 32px; }
       .hero-top { flex-direction: column; gap: 8px; }
       .hero h1 { font-size: clamp(64px, 18vw, 120px); margin-block: 28px 24px; }
       .hero-bottom { align-items: flex-start; flex-wrap: wrap; }
       .hero-stamp { width: 80px; height: 80px; font-size: 10px; }
       .art-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 14px; }
+      .gallery-section { padding-top: 24px; }
       .art-info { padding: 14px 12px 16px; }
       .art-title { font-size: clamp(18px, 4.5vw, 24px); }
       .list-view .art-card { grid-template-columns: 52px minmax(0, 1fr); }
       .list-view .art-description { display: none; }
       .list-view .art-meta { padding: 16px 6px; font-size: 10px; }
-      .list-view .art-title { padding: 16px 14px; }
+      .list-view .art-title { padding: 16px 14px; font-size: clamp(19px, 4.5vw, 26px); }
       .about { grid-template-columns: 1fr; gap: 32px; }
       .contact { grid-template-columns: 1fr; }
       .dialog-content { grid-template-columns: 1fr; }
@@ -784,13 +787,25 @@
       }
     }
 
-    /* Subtle entrance for cards */
+    /* Motion is applied only to newly rendered cards, not on every keystroke. */
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(18px); }
+      from { opacity: 0; transform: translateY(12px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    .art-card {
-      animation: fadeUp 0.6s var(--ease-out) both;
+    .art-card.is-entering { animation: fadeUp 0.48s var(--ease-out) both; }
+    .site-header.is-compact { padding-top: 12px; padding-bottom: 12px; }
+    .art-image img.is-loading { opacity: 0; }
+    .art-image img { transition: opacity 0.35s ease, transform 0.7s var(--ease-out), filter 0.5s; }
+    .art-image img.is-loaded { opacity: 1; }
+    .art-card:focus-within { border-color: var(--accent); }
+    .gallery-status {
+      min-height: 1.4em;
+      margin: -22px 0 22px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .art-card.is-entering { animation: none; }
     }
   </style>
 </head>
@@ -842,12 +857,13 @@
           <label class="eyebrow" for="artSearch" style="align-self:center">Search</label>
           <input class="search-input" id="artSearch" type="search" placeholder="Title or keyword..." autocomplete="off">
           <div class="view-switch" aria-label="Gallery layout">
-            <button type="button" data-view="grid" aria-pressed="true">Grid</button>
-            <button type="button" data-view="list" aria-pressed="false">List</button>
+            <button type="button" data-view="grid" aria-pressed="true" aria-label="Show artwork in grid layout">Grid</button>
+            <button type="button" data-view="list" aria-pressed="false" aria-label="Show artwork in list layout">List</button>
           </div>
         </div>
       </div>
 
+      <p class="gallery-status" id="galleryStatus" aria-live="polite"></p>
       <div class="art-grid" id="artGrid" aria-live="polite"></div>
       <p class="empty-state" id="emptyState">No artwork found. Try another search or category.</p>
       <p class="gallery-footnote">Select any artwork to view its details. Replace these sample projects with your own work before publishing.</p>
@@ -993,174 +1009,243 @@
       }
     ];
 
-    /* The rest of the script runs the gallery. You usually do not need to edit it. */
-    const artGrid = document.getElementById("artGrid");
-    const filters = document.getElementById("filters");
-    const artSearch = document.getElementById("artSearch");
-    const projectCount = document.getElementById("projectCount");
-    const emptyState = document.getElementById("emptyState");
-    const dialog = document.getElementById("artDialog");
-    let activeCategory = "All";
-    let activeView = "grid";
+    /* =========================================================
+       GALLERY ENGINE — edit PROJECTS above; the rest is automatic.
+       Includes filtering, search, responsive layouts, accessible
+       artwork details, reduced-motion support, and resilient images.
+       ========================================================= */
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-    // Build filter buttons from the categories used in PROJECTS.
-    const categories = ["All", ...new Set(PROJECTS.map(project => project.category))];
-    categories.forEach(category => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "filter-button";
-      button.textContent = category;
-      button.dataset.category = category;
-      button.setAttribute("aria-pressed", String(category === activeCategory));
-      button.addEventListener("click", () => {
-        activeCategory = category;
-        filters.querySelectorAll("button").forEach(item => {
-          item.setAttribute("aria-pressed", String(item.dataset.category === activeCategory));
+    const artGrid = $('#artGrid');
+    const filters = $('#filters');
+    const artSearch = $('#artSearch');
+    const projectCount = $('#projectCount');
+    const emptyState = $('#emptyState');
+    const galleryStatus = $('#galleryStatus');
+    const dialog = $('#artDialog');
+    const menuToggle = $('#menuToggle');
+    const mainNav = $('#mainNav');
+    const siteHeader = $('.site-header');
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    let activeCategory = 'All';
+    let activeView = 'grid';
+    let searchTimer;
+    let lastFocusedElement = null;
+
+    const categories = ['All', ...new Set(PROJECTS.map(project => project.category).filter(Boolean))];
+
+    // Keep data predictable and avoid rendering broken or incomplete entries.
+    const validProjects = PROJECTS.filter(project => project && project.title && project.image);
+    if (validProjects.length !== PROJECTS.length) {
+      console.warn('Some projects were skipped because they need at least a title and image URL.');
+    }
+
+    function buildFilters() {
+      const fragment = document.createDocumentFragment();
+      categories.forEach(category => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'filter-button';
+        button.textContent = category;
+        button.dataset.category = category;
+        button.setAttribute('aria-pressed', String(category === activeCategory));
+        button.addEventListener('click', () => {
+          activeCategory = category;
+          updateFilterStates();
+          renderProjects({ animate: true });
         });
-        renderProjects();
+        fragment.appendChild(button);
       });
-      filters.appendChild(button);
-    });
+      filters.replaceChildren(fragment);
+    }
 
-    // Build cards with DOM methods so artwork text is not inserted as raw HTML.
-    function createProjectCard(project, index) {
-      const card = document.createElement("article");
-      card.className = "art-card";
-      // Stagger animation
-      card.style.animationDelay = `${(index % 8) * 0.06}s`;
+    function updateFilterStates() {
+      $$('.filter-button', filters).forEach(button => {
+        button.setAttribute('aria-pressed', String(button.dataset.category === activeCategory));
+      });
+    }
 
-      const openButton = document.createElement("button");
-      openButton.type = "button";
-      openButton.className = "art-open";
-      openButton.setAttribute("aria-label", `View details for ${project.title}`);
+    function createProjectCard(project, index, animate) {
+      const card = document.createElement('article');
+      card.className = `art-card${animate && !reduceMotion ? ' is-entering' : ''}`;
+      if (animate && !reduceMotion) card.style.animationDelay = `${Math.min(index, 7) * 45}ms`;
 
-      const imageWrap = document.createElement("div");
-      imageWrap.className = "art-image";
-      const image = document.createElement("img");
+      const openButton = document.createElement('button');
+      openButton.type = 'button';
+      openButton.className = 'art-open';
+      openButton.setAttribute('aria-label', `View details for ${project.title}`);
+
+      const imageWrap = document.createElement('div');
+      imageWrap.className = 'art-image';
+      const image = document.createElement('img');
       image.src = project.image;
       image.alt = project.alt || project.title;
-      image.loading = "lazy";
-      image.decoding = "async";
+      image.loading = index < 4 ? 'eager' : 'lazy';
+      image.decoding = 'async';
+      image.classList.add('is-loading');
+      image.addEventListener('load', () => {
+        image.classList.remove('is-loading');
+        image.classList.add('is-loaded');
+      }, { once: true });
+      image.addEventListener('error', () => {
+        imageWrap.classList.add('image-unavailable');
+        image.remove();
+        const fallback = document.createElement('span');
+        fallback.className = 'image-fallback';
+        fallback.textContent = 'Image unavailable';
+        fallback.style.cssText = 'display:grid;place-items:center;width:100%;height:100%;min-height:180px;color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:20px;text-align:center;';
+        imageWrap.appendChild(fallback);
+      }, { once: true });
       imageWrap.appendChild(image);
 
-      const info = document.createElement("div");
-      info.className = "art-info";
-      const meta = document.createElement("div");
-      meta.className = "art-meta";
-      const number = document.createElement("span");
-      number.textContent = String(index + 1).padStart(2, "0");
-      const tag = document.createElement("span");
-      tag.className = "art-tag";
-      tag.textContent = project.category;
+      const info = document.createElement('div');
+      info.className = 'art-info';
+      const meta = document.createElement('div');
+      meta.className = 'art-meta';
+      const number = document.createElement('span');
+      number.textContent = String(index + 1).padStart(2, '0');
+      const tag = document.createElement('span');
+      tag.className = 'art-tag';
+      tag.textContent = project.category || 'Artwork';
       meta.append(number, tag);
 
-      const title = document.createElement("h3");
-      title.className = "art-title";
+      const title = document.createElement('h3');
+      title.className = 'art-title';
       title.textContent = project.title;
-      const description = document.createElement("p");
-      description.className = "art-description";
-      description.textContent = project.description;
+      const description = document.createElement('p');
+      description.className = 'art-description';
+      description.textContent = project.description || 'A selected creative project.';
 
       info.append(meta, title, description);
       openButton.append(imageWrap, info);
-      openButton.addEventListener("click", () => openProject(project, index));
+      openButton.addEventListener('click', () => openProject(project, index, openButton));
       card.appendChild(openButton);
       return card;
     }
 
-    function renderProjects() {
-      const query = artSearch.value.trim().toLowerCase();
-      const visibleProjects = PROJECTS.filter(project => {
-        const matchesCategory = activeCategory === "All" || project.category === activeCategory;
-        const searchableText = `${project.title} ${project.category} ${project.year} ${project.description}`.toLowerCase();
+    function getVisibleProjects() {
+      const query = artSearch.value.trim().toLocaleLowerCase();
+      return validProjects.filter(project => {
+        const matchesCategory = activeCategory === 'All' || project.category === activeCategory;
+        const searchableText = [project.title, project.category, project.year, project.description]
+          .filter(Boolean).join(' ').toLocaleLowerCase();
         return matchesCategory && searchableText.includes(query);
       });
-
-      artGrid.replaceChildren();
-      visibleProjects.forEach(project => {
-        const originalIndex = PROJECTS.indexOf(project);
-        artGrid.appendChild(createProjectCard(project, originalIndex));
-      });
-
-      projectCount.textContent = `${String(visibleProjects.length).padStart(2, "0")} ${visibleProjects.length === 1 ? "project" : "projects"}`;
-      emptyState.classList.toggle("show", visibleProjects.length === 0);
-      artGrid.classList.toggle("list-view", activeView === "list");
     }
 
-    function openProject(project, index) {
-      document.getElementById("dialogCounter").textContent = `Artwork ${String(index + 1).padStart(2, "0")} / ${String(PROJECTS.length).padStart(2, "0")}`;
-      document.getElementById("dialogImage").src = project.image;
-      document.getElementById("dialogImage").alt = project.alt || project.title;
-      document.getElementById("dialogCategory").textContent = project.category;
-      document.getElementById("dialogTitle").textContent = project.title;
-      document.getElementById("dialogDescription").textContent = project.description;
-      document.getElementById("dialogYear").textContent = project.year || "";
-      const links = document.getElementById("dialogLinks");
+    function renderProjects({ animate = false } = {}) {
+      const visibleProjects = getVisibleProjects();
+      const fragment = document.createDocumentFragment();
+      visibleProjects.forEach(project => {
+        const originalIndex = validProjects.indexOf(project);
+        fragment.appendChild(createProjectCard(project, originalIndex, animate));
+      });
+      artGrid.replaceChildren(fragment);
+      artGrid.classList.toggle('list-view', activeView === 'list');
+      projectCount.textContent = `${String(visibleProjects.length).padStart(2, '0')} ${visibleProjects.length === 1 ? 'project' : 'projects'}`;
+      emptyState.classList.toggle('show', visibleProjects.length === 0);
+      galleryStatus.textContent = visibleProjects.length
+        ? `Showing ${visibleProjects.length} of ${validProjects.length} projects`
+        : 'No results. Try a different keyword or category.';
+    }
+
+    function openProject(project, index, trigger) {
+      lastFocusedElement = trigger || document.activeElement;
+      $('#dialogCounter').textContent = `Artwork ${String(index + 1).padStart(2, '0')} / ${String(validProjects.length).padStart(2, '0')}`;
+      const dialogImage = $('#dialogImage');
+      dialogImage.src = project.image;
+      dialogImage.alt = project.alt || project.title;
+      $('#dialogCategory').textContent = project.category || 'Artwork';
+      $('#dialogTitle').textContent = project.title;
+      $('#dialogDescription').textContent = project.description || 'A selected creative project.';
+      $('#dialogYear').textContent = project.year || '';
+      const links = $('#dialogLinks');
       links.replaceChildren();
 
       if (project.link) {
-        const projectLink = document.createElement("a");
-        projectLink.className = "button";
+        const projectLink = document.createElement('a');
+        projectLink.className = 'button';
         projectLink.href = project.link;
-        projectLink.target = "_blank";
-        projectLink.rel = "noopener noreferrer";
-        projectLink.textContent = "View project ↗";
+        projectLink.target = '_blank';
+        projectLink.rel = 'noopener noreferrer';
+        projectLink.textContent = 'View project ↗';
         links.appendChild(projectLink);
       }
-      const closeButton = document.createElement("button");
-      closeButton.type = "button";
-      closeButton.className = "button secondary";
-      closeButton.textContent = "Close";
-      closeButton.addEventListener("click", () => dialog.close(), { once: true });
-      links.appendChild(closeButton);
 
-      if (typeof dialog.showModal === "function") dialog.showModal();
-      else alert(`${project.title}\n${project.category} · ${project.year}\n\n${project.description}`);
+      if (typeof dialog.showModal === 'function') {
+        dialog.showModal();
+        $('#dialogClose').focus();
+      } else {
+        // Fallback for browsers without native dialog support.
+        window.alert(`${project.title}\n${project.category || 'Artwork'} · ${project.year || ''}\n\n${project.description || ''}`);
+      }
     }
 
-    // Search updates results as the visitor types.
-    artSearch.addEventListener("input", renderProjects);
+    // Search is lightly debounced to keep larger portfolios smooth.
+    artSearch.addEventListener('input', () => {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => renderProjects(), 100);
+    });
 
-    // Grid/list controls change the gallery layout.
-    document.querySelectorAll("[data-view]").forEach(button => {
-      button.addEventListener("click", () => {
+    $$('.view-switch [data-view]').forEach(button => {
+      button.addEventListener('click', () => {
         activeView = button.dataset.view;
-        document.querySelectorAll("[data-view]").forEach(item => {
-          item.setAttribute("aria-pressed", String(item === button));
+        $$('.view-switch [data-view]').forEach(item => {
+          item.setAttribute('aria-pressed', String(item === button));
         });
-        artGrid.classList.toggle("list-view", activeView === "list");
+        artGrid.classList.toggle('list-view', activeView === 'list');
       });
     });
 
-    // Mobile navigation opens and closes with one button.
-    const menuToggle = document.getElementById("menuToggle");
-    const mainNav = document.getElementById("mainNav");
-    menuToggle.addEventListener("click", () => {
-      const isOpen = mainNav.classList.toggle("open");
-      menuToggle.setAttribute("aria-expanded", String(isOpen));
-      menuToggle.textContent = isOpen ? "Close ×" : "Menu +";
+    // Mobile menu closes after navigation and when the visitor presses Escape.
+    function closeMenu() {
+      mainNav.classList.remove('open');
+      menuToggle.setAttribute('aria-expanded', 'false');
+      menuToggle.textContent = 'Menu +';
+    }
+    menuToggle.addEventListener('click', () => {
+      const isOpen = mainNav.classList.toggle('open');
+      menuToggle.setAttribute('aria-expanded', String(isOpen));
+      menuToggle.textContent = isOpen ? 'Close ×' : 'Menu +';
     });
-    mainNav.querySelectorAll("a").forEach(link => {
-      link.addEventListener("click", () => {
-        mainNav.classList.remove("open");
-        menuToggle.setAttribute("aria-expanded", "false");
-        menuToggle.textContent = "Menu +";
-      });
-    });
+    $$('a', mainNav).forEach(link => link.addEventListener('click', closeMenu));
 
-    // Close the artwork dialog with the close button or by clicking outside it.
-    document.getElementById("dialogClose").addEventListener("click", () => dialog.close());
-    dialog.addEventListener("click", event => {
+    $('#dialogClose').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', event => {
       if (event.target === dialog) dialog.close();
     });
-
-    // Keyboard: Escape already handled by <dialog>, but ensure focus trap is native.
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && dialog.open) dialog.close();
+    dialog.addEventListener('close', () => {
+      if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') lastFocusedElement.focus();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closeMenu();
+      // Keyboard shortcut: press / to focus gallery search, unless typing elsewhere.
+      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const target = event.target;
+        const isTyping = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
+        if (!isTyping && !dialog.open) {
+          event.preventDefault();
+          artSearch.focus();
+        }
+      }
     });
 
-    document.getElementById("currentYear").textContent = new Date().getFullYear();
-    renderProjects();
+    // A compact header gives the page a more deliberate feel while scrolling.
+    let scrollTicking = false;
+    window.addEventListener('scroll', () => {
+      if (scrollTicking) return;
+      scrollTicking = true;
+      window.requestAnimationFrame(() => {
+        siteHeader.classList.toggle('is-compact', window.scrollY > 24);
+        scrollTicking = false;
+      });
+    }, { passive: true });
+
+    $('#currentYear').textContent = new Date().getFullYear();
+    buildFilters();
+    renderProjects({ animate: true });
   </script>
 </body>
 </html>
